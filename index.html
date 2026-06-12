@@ -61,9 +61,9 @@
   #content-area{flex:1;display:flex;overflow:hidden;}
   /* TABLE */
   #plc{flex:1;overflow-y:auto;padding:11px;display:flex;flex-direction:column;gap:5px;min-width:0;}
-  .chdr{display:grid;grid-template-columns:28px 1fr 1fr 108px 52px 52px 26px;gap:5px;padding:0 2px 5px;border-bottom:1px solid var(--brd);margin-bottom:1px;}
+  .chdr{display:grid;grid-template-columns:28px 1fr 1fr 108px 52px 26px;gap:5px;padding:0 2px 5px;border-bottom:1px solid var(--brd);margin-bottom:1px;}
   .chdr span{font-family:'Barlow Condensed',sans-serif;font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--mut);}
-  .prow{background:var(--surf);border:1px solid var(--brd);border-radius:4px;padding:5px 7px;display:grid;grid-template-columns:28px 1fr 1fr 108px 52px 52px 26px;align-items:center;gap:5px;transition:border-color .2s;}
+  .prow{background:var(--surf);border:1px solid var(--brd);border-radius:4px;padding:5px 7px;display:grid;grid-template-columns:28px 1fr 1fr 108px 52px 26px;align-items:center;gap:5px;transition:border-color .2s;}
   .prow:hover{border-color:#3a3a3a;}
   .prow.hd{border-left:3px solid var(--acc);}
   .pbdg{background:var(--surf2);border:1px solid var(--brd);border-radius:3px;color:var(--mut);font-family:'Bebas Neue',sans-serif;font-size:13px;text-align:center;width:28px;height:26px;display:flex;align-items:center;justify-content:center;}
@@ -74,8 +74,6 @@
   .avc{display:flex;align-items:center;}
   .avp{width:26px;height:26px;border-radius:50%;background:var(--surf2);border:1px solid var(--brd);cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--mut);font-size:13px;overflow:hidden;flex-shrink:0;}
   .avp img{width:100%;height:100%;object-fit:cover;}
-  .avp-rev{width:26px;height:26px;border-radius:5px;background:var(--surf2);border:1px solid var(--brd);cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--mut);font-size:11px;overflow:hidden;flex-shrink:0;}
-  .avp-rev img{width:100%;height:100%;object-fit:cover;}
   .dbn{background:none;border:none;color:#3a3a3a;cursor:pointer;font-size:13px;padding:2px;border-radius:3px;transition:color .2s;}
   .dbn:hover{color:#ff4444;}
   /* TOGGLE SIDEBAR & PREVIEW */
@@ -312,7 +310,7 @@
   <div id="content-area">
     <div id="plc">
       <div class="chdr">
-        <span>POS</span><span>NOM</span><span>ÉQUIPE</span><span>TEMPS</span><span>GRILLE</span><span>REVEAL</span><span></span>
+        <span>POS</span><span>NOM</span><span>ÉQUIPE</span><span>TEMPS</span><span>AV.</span><span></span>
       </div>
     </div>
     <div id="pv-panel">
@@ -349,6 +347,15 @@ function initAbly() {
   ablyClient = new Ably.Realtime({ key: ABLY_KEY });
   chMain   = ablyClient.channels.get(CHAN_MAIN);
   chAssets = ablyClient.channels.get(CHAN_ASSETS);
+
+  // Écouter les demandes de l'overlay (quand il se connecte à Ably)
+  const chControl = ablyClient.channels.get('tzr-grille-control');
+  chControl.subscribe('requestState', async () => {
+    console.log('[TZR Editor] Overlay connecté — republish auto');
+    if (pilots.some(p => p.name || p.time)) {
+      await publishAll();
+    }
+  });
   ablyClient.connection.on('connected',    () => setAS('ok',         'Connecté'));
   ablyClient.connection.on('connecting',   () => setAS('connecting', 'Connexion…'));
   ablyClient.connection.on('disconnected', () => setAS('err',        'Déconnecté'));
@@ -441,11 +448,10 @@ async function publishAll() {
 
   try {
     await chMain.publish('config', light);
-    lastPublishTs = Date.now();
     const now = new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
     document.getElementById('s-sv').textContent = now;
     showToast('Envoyé ✓');
-    try { localStorage.setItem('tzr_grille_local', JSON.stringify({ ...cfg, assets:{ logo:logoData, bg:bgData, cf:cfData, cfName } })); } catch(e) {}
+    try { localStorage.setItem('tzr_grille_local', JSON.stringify(cfg)); } catch(e) {}
   } catch(e) {
     showToast('Erreur: ' + (e.message || String(e)));
     console.error('[TZR] publish config error:', e);
@@ -455,25 +461,15 @@ async function publishAll() {
   // Assets en arrière-plan : avatars + bg + logo
   setTimeout(async () => {
     try {
-      // Avatars grille (cercle) — 100x100
+      // Avatars — compressés en 100x100, envoyés par map id->base64
       const pilotsWithAv = cfg.pilots.filter(p => p.avatar);
       if (pilotsWithAv.length > 0) {
-        showToast('Avatars grille…');
+        showToast('Avatars…');
         const avatarMap = {};
         for (const p of pilotsWithAv) {
           avatarMap[p.id] = await compressImage(p.avatar, 100, 100, 0.75);
         }
         await chAssets.publish('assets', { type: 'avatars', avatarMap });
-      }
-      // Avatars révélation (carré) — 300x300 pour qualité écran
-      const pilotsWithRev = cfg.pilots.filter(p => p.avatarReveal);
-      if (pilotsWithRev.length > 0) {
-        showToast('Avatars révélation…');
-        const avatarRevealMap = {};
-        for (const p of pilotsWithRev) {
-          avatarRevealMap[p.id] = await compressImage(p.avatarReveal, 300, 300, 0.82);
-        }
-        await chAssets.publish('assets', { type: 'avatarsReveal', avatarRevealMap });
       }
 
       // Fond + logo
@@ -512,41 +508,19 @@ function dp() { // debounced preview
 
 function pushPreview() {
   const cfg = buildConfig();
-
-  // Construire l'avatarMap et avatarRevealMap depuis les pilotes
-  const avatarMap = {};
-  const avatarRevealMap = {};
-  pilots.forEach(p => {
-    if (p.avatar)        avatarMap[p.id]       = p.avatar;
-    if (p.avatarReveal)  avatarRevealMap[p.id]  = p.avatarReveal;
-  });
-
-  // BroadcastChannel vers onglet overlay ouvert
-  if (bc) {
-    bc.postMessage({ type: 'config', cfg });
-    if (Object.keys(avatarMap).length)       bc.postMessage({ type: 'assets', data: { type: 'avatars',       avatarMap } });
-    if (Object.keys(avatarRevealMap).length) bc.postMessage({ type: 'assets', data: { type: 'avatarsReveal', avatarRevealMap } });
-    if (logoData) bc.postMessage({ type: 'assets', data: { type: 'logo', logo: logoData } });
-    if (bgData)   bc.postMessage({ type: 'assets', data: { type: 'bg',   bg:   bgData,   bgOpacity: cfg.style?.bgOpacity } });
-  }
-
-  // Injection directe dans l'iframe (même origin)
+  // Option 1 : BroadcastChannel vers onglet overlay ouvert
+  if (bc) bc.postMessage({ type: 'config', cfg });
+  // Option 2 : injection directe dans l'iframe si même origin (fichiers locaux)
   const frame = document.getElementById('pv-frame');
   if (frame) {
     try {
       const fw = frame.contentWindow;
       if (fw && fw.applyConfig) {
         fw.applyConfig(cfg);
-        // Assets inline
-        if (logoData) fw.applyAssets({ type: 'logo',         logo:           logoData });
-        if (bgData)   fw.applyAssets({ type: 'bg',           bg:             bgData,   bgOpacity: cfg.style?.bgOpacity });
-        if (Object.keys(avatarMap).length)
-          setTimeout(() => { try { fw.applyAssets({ type: 'avatars',       avatarMap }); } catch(e){} }, 50);
-        if (Object.keys(avatarRevealMap).length)
-          setTimeout(() => { try { fw.applyAssets({ type: 'avatarsReveal', avatarRevealMap }); } catch(e){} }, 80);
+        if (logoData || bgData) fw.applyAssets({ logo: logoData, bg: bgData, cf: cfData, cfName });
       }
     } catch(e) {
-      // Bloqué par CORS — normal en file://, aperçu mis à jour après 🚀
+      // Bloqué par CORS — normal en file://, l'aperçu se met à jour après 🚀
     }
   }
 }
@@ -606,7 +580,7 @@ function fnChg() { document.getElementById('fc-row').style.display = document.ge
 // ═══════════════════════════════════════════
 function addPD(d={}) {
   if (pilots.length>=MAX) return;
-  pilots.push({id:Date.now()+Math.random(),name:d.name||'',team:d.team||'',time:d.time||'',avatar:d.avatar||null,avatarReveal:d.avatarReveal||null});
+  pilots.push({id:Date.now()+Math.random(),name:d.name||'',team:d.team||'',time:d.time||'',avatar:d.avatar||null});
 }
 function addPilot() {
   if (pilots.length>=MAX){showToast('Maximum 15 pilotes');return;}
@@ -631,8 +605,7 @@ function mkRow(p, pos) {
     `<input type="text" placeholder="Nom" value="${esc(p.name)}" oninput="ufl('${p.id}','name',this)">` +
     `<input type="text" placeholder="Équipe" value="${esc(p.team)}" oninput="ufl('${p.id}','team',this)">` +
     `<input type="text" placeholder="0:00.000" value="${esc(p.time)}" oninput="fmtT(this,'${p.id}')" maxlength="9" class="ti" inputmode="numeric">` +
-    `<div class="avc"><div class="avp" id="av-${p.id}" onclick="trigAv('${p.id}')" title="Avatar grille">${p.avatar?`<img src="${p.avatar}">`:'👤'}</div><input type="file" id="avf-${p.id}" accept="image/*" style="display:none" onchange="loadAv('${p.id}','avatar',event)"></div>` +
-    `<div class="avc"><div class="avp-rev" id="avr-${p.id}" onclick="trigAvR('${p.id}')" title="Avatar révélation">${p.avatarReveal?`<img src="${p.avatarReveal}">`:'🎭'}</div><input type="file" id="avrf-${p.id}" accept="image/*" style="display:none" onchange="loadAv('${p.id}','avatarReveal',event)"></div>` +
+    `<div class="avc"><div class="avp" id="av-${p.id}" onclick="trigAv('${p.id}')">${p.avatar?`<img src="${p.avatar}">`:'👤'}</div><input type="file" id="avf-${p.id}" accept="image/*" style="display:none" onchange="loadAv('${p.id}',event)"></div>` +
     `<button class="dbn" onclick="removePilot('${p.id}')">✕</button>`;
   return row;
 }
@@ -658,15 +631,12 @@ function fmtT(input, id) {
   ufl(id,'time',input);
 }
 
-function trigAv(id)  { document.getElementById(`avf-${id}`).click(); }
-function trigAvR(id) { document.getElementById(`avrf-${id}`).click(); }
-function loadAv(id, field, e) {
+function trigAv(id) { document.getElementById(`avf-${id}`).click(); }
+function loadAv(id,e) {
   const f=e.target.files[0]; if(!f) return;
   const r=new FileReader(); r.onload=ev=>{
-    const p=pilots.find(x=>x.id==id); if(p) p[field]=ev.target.result;
-    const elId = field==='avatar' ? `av-${id}` : `avr-${id}`;
-    const el=document.getElementById(elId);
-    if(el) el.innerHTML=`<img src="${ev.target.result}">`;
+    const p=pilots.find(x=>x.id==id); if(p) p.avatar=ev.target.result;
+    const av=document.getElementById(`av-${id}`); if(av) av.innerHTML=`<img src="${ev.target.result}">`;
     dp();
   }; r.readAsDataURL(f);
 }
@@ -731,24 +701,17 @@ function buildConfig() {
       delta:   document.getElementById('cl-delta')?.value    || '#515151',
       footer:  document.getElementById('cl-footer')?.value   || '#383838',
     },
-    assets:{}
+    assets:{logo:logoData,bg:bgData,cf:cfData,cfName}
   };
 }
 
-function saveLocal() {
-  try {
-    // Sauvegarder avec les assets pour restaurer la session
-    const cfg = buildConfig();
-    const withAssets = { ...cfg, assets: { logo:logoData, bg:bgData, cf:cfData, cfName } };
-    localStorage.setItem('tzr_grille_local', JSON.stringify(withAssets));
-  } catch(e) {}
-}
+function saveLocal() { try{localStorage.setItem('tzr_grille_local',JSON.stringify(buildConfig()));}catch(e){} }
 
 function loadLocal() {
   const raw=localStorage.getItem('tzr_grille_local'); if(!raw) return;
   try {
     const c=JSON.parse(raw);
-    if(c.pilots) pilots=c.pilots.map(p=>({avatarReveal:null,...p}));
+    if(c.pilots) pilots=c.pilots;
     if(c.event){sv('ev-track',c.event.track);sv('ev-round',c.event.round);sv('ev-date',c.event.date);}
     if(c.texts){sv('tx-badge',c.texts.badge);sv('tx-champ',c.texts.champ);sv('tx-sub',c.texts.sub);sv('tx-slogan',c.texts.slogan);sv('tx-fl',c.texts.fl);sv('tx-fr',c.texts.fr);sv('tx-rev',c.texts.rev);if(c.texts.badge)document.getElementById('org-badge').textContent=c.texts.badge;}
     if(c.style){scp('c-bg','c-bg-h',c.style.bg);scp('c-acc','c-acc-h',c.style.accent);scp('c-pole','c-pole-h',c.style.poleColor);if(c.style.sizeName){sv('sz',c.style.sizeName);document.getElementById('sz-v').textContent=c.style.sizeName;}if(c.style.bgOpacity){sv('bg-op',c.style.bgOpacity);document.getElementById('bg-op-v').textContent=c.style.bgOpacity;}}
@@ -842,21 +805,6 @@ function togglePv() {
 }
 
 setInterval(saveLocal, 30000);
-
-// Republier automatiquement toutes les 10s si connecté
-// Permet à l'overlay OBS de recevoir l'état sans history()
-let lastPublishTs = 0;
-setInterval(async () => {
-  if (!ablyClient || ablyClient.connection.state !== 'connected') return;
-  if (!pilots.some(p => p.name || p.time)) return; // rien à publier
-  if (Date.now() - lastPublishTs < 8000) return; // déjà publié récemment
-  try {
-    const cfg = buildConfig();
-    const light = { ...cfg, assets: {}, pilots: cfg.pilots.map(p => ({ ...p, avatar: null, avatarReveal: null })) };
-    await chMain.publish('config', light);
-    lastPublishTs = Date.now();
-  } catch(e) { /* silencieux */ }
-}, 10000);
 </script>
 </body>
 </html>
