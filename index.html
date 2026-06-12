@@ -428,72 +428,73 @@ function waitConnected() {
 
 async function publishAll() {
   showToast('Connexion…');
-
-  try {
-    // Attendre la connexion avant tout
-    await waitConnected();
-  } catch(e) {
-    showToast('Ably non connecté — réessaie');
-    console.error('[TZR]', e);
-    return;
-  }
+  try { await waitConnected(); }
+  catch(e) { showToast('Ably non connecté'); return; }
 
   showToast('Envoi…');
-
   const cfg = buildConfig();
 
-  // Config principale — pilots SANS avatars (envoyés séparément via chAssets)
+  // Payload principal : textes, couleurs, pilotes — SANS aucune image
   const light = {
     ...cfg,
     assets: {},
-    pilots: cfg.pilots.map(p => ({ ...p, avatar: null }))
+    pilots: cfg.pilots.map(p => ({
+      id: p.id, name: p.name, team: p.team, time: p.time
+      // avatar et avatarReveal exclus — envoyés via chAssets
+    }))
   };
+
+  // Vérification taille avant envoi
+  const sz = JSON.stringify(light).length;
+  console.log('[TZR] Config payload:', (sz/1024).toFixed(1) + 'KB');
+  if (sz > 60000) { showToast('Config trop lourde (' + (sz/1024).toFixed(0) + 'KB)'); return; }
 
   try {
     await chMain.publish('config', light);
-    const now = new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+    const now = new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
     document.getElementById('s-sv').textContent = now;
     showToast('Envoyé ✓');
-    try { localStorage.setItem('tzr_grille_local', JSON.stringify(cfg)); } catch(e) {}
+    // Sauvegarder localement avec les vraies données (avatars inclus)
+    try { localStorage.setItem('tzr_grille_local', JSON.stringify({...cfg,assets:{logo:logoData,bg:bgData,cf:cfData,cfName}})); } catch(e) {}
   } catch(e) {
-    showToast('Erreur: ' + (e.message || String(e)));
-    console.error('[TZR] publish config error:', e);
+    showToast('Erreur: ' + (e.message||String(e)));
+    console.error('[TZR] config error:', e);
     return;
   }
 
-  // Assets en arrière-plan : avatars + bg + logo
+  // Assets séparés — en arrière-plan, sans bloquer
   setTimeout(async () => {
     try {
-      // Avatars — compressés en 100x100, envoyés par map id->base64
-      const pilotsWithAv = cfg.pilots.filter(p => p.avatar);
-      if (pilotsWithAv.length > 0) {
-        showToast('Avatars…');
-        const avatarMap = {};
-        for (const p of pilotsWithAv) {
-          avatarMap[p.id] = await compressImage(p.avatar, 100, 100, 0.75);
-        }
-        await chAssets.publish('assets', { type: 'avatars', avatarMap });
-      }
-
-      // Fond + logo
-      if (bgData || logoData) {
-        showToast('Images…');
-        if (bgData) {
-          const bgComp = await compressImage(bgData, 1280, 720, 0.55);
-          if (bgComp) await chAssets.publish('assets', { type:'bg', bg:bgComp, bgOpacity: cfg.style?.bgOpacity });
-        }
-        if (logoData) {
-          const logoComp = await compressImage(logoData, 300, 300, 0.80);
-          if (logoComp) await chAssets.publish('assets', { type:'logo', logo:logoComp });
+      // Avatars grille (un par un si plusieurs)
+      for (const p of cfg.pilots.filter(p => p.avatar)) {
+        const comp = await compressImage(p.avatar, 100, 100, 0.75);
+        if (comp) {
+          const payload = { type:'avatars', avatarMap:{ [p.id]: comp } };
+          console.log('[TZR] Avatar', p.name, (JSON.stringify(payload).length/1024).toFixed(1)+'KB');
+          await chAssets.publish('assets', payload);
         }
       }
-
+      // Avatars révélation
+      for (const p of cfg.pilots.filter(p => p.avatarReveal)) {
+        const comp = await compressImage(p.avatarReveal, 280, 280, 0.80);
+        if (comp) await chAssets.publish('assets', { type:'avatarsReveal', avatarRevealMap:{ [p.id]: comp } });
+      }
+      // Fond
+      if (bgData) {
+        const comp = await compressImage(bgData, 1280, 720, 0.55);
+        if (comp) { console.log('[TZR] BG',(comp.length/1024).toFixed(1)+'KB'); await chAssets.publish('assets', { type:'bg', bg:comp, bgOpacity:cfg.style?.bgOpacity }); }
+      }
+      // Logo
+      if (logoData) {
+        const comp = await compressImage(logoData, 300, 300, 0.80);
+        if (comp) await chAssets.publish('assets', { type:'logo', logo:comp });
+      }
       showToast('Tout envoyé ✓');
     } catch(e) {
-      showToast('Erreur assets: ' + (e.message || String(e)));
-      console.error('[TZR] publish assets error:', e);
+      showToast('Erreur assets: ' + (e.message||String(e)));
+      console.error('[TZR] assets error:', e);
     }
-  }, 200);
+  }, 300);
 }
 
 // ═══════════════════════════════════════════
