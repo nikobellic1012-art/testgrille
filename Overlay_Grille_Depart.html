@@ -107,7 +107,7 @@
   #ctrl-dot.err{background:#ff4444;}
   #ctrl-dot.connecting{background:#ffab00;animation:pulse 1s infinite;}
   @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.3;}}
-  body.obs #ctrl{display:none;}
+  #ctrl{display:none!important;}
   /* STATUS MSG */
   #status-msg{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;color:rgba(255,255,255,.15);font-family:'Bebas Neue',sans-serif;font-size:28px;letter-spacing:4px;pointer-events:none;z-index:3;}
   #status-msg p{font-family:'Barlow Condensed',sans-serif;font-size:14px;letter-spacing:2px;font-weight:400;margin-top:10px;color:rgba(255,255,255,.1);}
@@ -168,70 +168,43 @@ const root = document.documentElement;
 
 // ── ABLY ──
 function initAbly() {
-  const client = new Ably.Realtime({ key: ABLY_KEY });
+  const client = new Ably.Realtime({
+    key: ABLY_KEY,
+    transports: ['web_socket', 'xhr_streaming', 'xhr_polling'],
+    disconnectedRetryTimeout: 3000,
+  });
   const chMain   = client.channels.get(CHAN_MAIN);
   const chAssets = client.channels.get(CHAN_ASSETS);
 
-  client.connection.on('connected',    () => setDot('ok'));
-  client.connection.on('connecting',   () => setDot('connecting'));
-  client.connection.on('disconnected', () => setDot('err'));
-  client.connection.on('failed',       () => { setDot('err'); log('Connexion Ably échouée'); });
+  client.connection.on('connected',    () => { setDot('ok');         log('Connecté ✓'); requestState(); });
+  client.connection.on('connecting',   () => { setDot('connecting'); log('Connexion…'); });
+  client.connection.on('disconnected', () => { setDot('err');        log('Déconnecté'); });
+  client.connection.on('failed',       () => { setDot('err');        log('Echec'); });
 
-  // Écoute config principale
+  const chControl = client.channels.get('tzr-grille-control');
+  window._chControl = chControl;
+  chControl.subscribe('requestState', () => { /* ignoré côté overlay */ });
+
+  // Config — mise à jour immédiate dès réception
   chMain.subscribe('config', msg => {
-    log('Config reçue via Ably');
+    log('Config reçue ✓');
     cfg = msg.data;
     resetAnim();
     applyConfig(cfg);
     setTimeout(startAnim, 400);
   });
 
-  // Écoute assets — on fusionne pour ne pas perdre bg quand logo arrive et vice versa
+  // Assets — fusion sans écraser les autres
   chAssets.subscribe('assets', msg => {
     const data = msg.data || {};
-    log('Assets reçus: ' + (data.type || 'complet'));
-    // Fusionner dans assets global
-    if (data.type === 'bg')      { assets.bg = data.bg; assets.bgOpacity = data.bgOpacity; }
-    else if (data.type === 'logo')    { assets.logo = data.logo; }
-    else if (data.type === 'font')    { assets.cf = data.cf; assets.cfName = data.cfName; }
-    else if (data.type === 'avatars') { assets.avatarMap = { ...(assets.avatarMap||{}), ...data.avatarMap }; }
-    else { assets = { ...assets, ...data }; }
+    log('Asset: ' + (data.type || '?'));
+    if      (data.type === 'bg')            { assets.bg = data.bg; assets.bgOpacity = data.bgOpacity; }
+    else if (data.type === 'logo')          { assets.logo = data.logo; }
+    else if (data.type === 'font')          { assets.cf = data.cf; assets.cfName = data.cfName; }
+    else if (data.type === 'avatars')       { assets.avatarMap = { ...(assets.avatarMap||{}), ...data.avatarMap }; }
+    else if (data.type === 'avatarsReveal') { assets.avatarRevealMap = { ...(assets.avatarRevealMap||{}), ...data.avatarRevealMap }; }
+    else                                    { assets = { ...assets, ...data }; }
     if (cfg) applyAssets(data);
-  });
-
-  // Historique au chargement
-  client.connection.once('connected', () => {
-    // 1. Charger la config en premier
-    chMain.history({ limit: 1 }, (err, page) => {
-      if (!err && page && page.items.length > 0) {
-        cfg = page.items[0].data;
-        log('Config restaurée');
-        applyConfig(cfg); // buildGrid est appelé ici
-        if (isOBS()) setTimeout(startAnim, 800);
-      } else {
-        log('En attente de données…');
-      }
-
-      // 2. Charger les assets APRÈS la config (la grille doit exister pour les avatars)
-      chAssets.history({ limit: 5 }, (err2, page2) => {
-        if (!err2 && page2 && page2.items.length > 0) {
-          const items = [...page2.items].reverse();
-          items.forEach(item => {
-            const data = item.data || {};
-            if (data.type === 'bg')        { assets.bg = data.bg; assets.bgOpacity = data.bgOpacity; }
-            else if (data.type === 'logo') { assets.logo = data.logo; }
-            else if (data.type === 'font') { assets.cf = data.cf; assets.cfName = data.cfName; }
-            else if (data.type === 'avatars') { assets.avatarMap = { ...(assets.avatarMap||{}), ...data.avatarMap }; }
-            else { assets = { ...assets, ...data }; }
-          });
-          log('Assets restaurés');
-          if (assets.bg)        applyAssets({ type:'bg',      bg:assets.bg,          bgOpacity:assets.bgOpacity });
-          if (assets.logo)      applyAssets({ type:'logo',    logo:assets.logo });
-          if (assets.cf)        applyAssets({ type:'font',    cf:assets.cf,          cfName:assets.cfName });
-          if (assets.avatarMap) setTimeout(() => applyAssets({ type:'avatars', avatarMap:assets.avatarMap }), 100);
-        }
-      });
-    });
   });
 }
 
@@ -239,11 +212,18 @@ function setDot(state) {
   const d = document.getElementById('ctrl-dot');
   if (d) { d.className = state; }
 }
-
 function log(msg) {
   console.log('[TZR Overlay]', msg);
   const el = document.getElementById('ctrl-lbl');
   if (el) el.textContent = msg;
+}
+
+// Demande à l'éditeur de republier l'état courant
+// On envoie 'obs' comme source pour que l'éditeur ignore les requêtes venant de l'iframe preview
+function requestState() {
+  try {
+    if (window._chControl) window._chControl.publish('requestState', { ts: Date.now(), source: 'obs' });
+  } catch(e) {}
 }
 
 // ── APPLY CONFIG (sans assets lourds) ──
@@ -589,7 +569,6 @@ if (typeof BroadcastChannel !== 'undefined') {
 }
 
 window.onload = () => {
-  if (isOBS()) document.body.classList.add('obs');
   initAbly();
 };
 </script>

@@ -350,8 +350,11 @@ function initAbly() {
 
   // Écouter les demandes de l'overlay (quand il se connecte à Ably)
   const chControl = ablyClient.channels.get('tzr-grille-control');
-  chControl.subscribe('requestState', async () => {
-    console.log('[TZR Editor] Overlay connecté — republish auto');
+  chControl.subscribe('requestState', async (msg) => {
+    // Ignorer les requêtes qui ne viennent pas de l'overlay OBS
+    // (évite la boucle avec l'iframe de prévisualisation)
+    if (!msg.data || msg.data.source !== 'obs') return;
+    console.log('[TZR Editor] Overlay OBS connecté — republish auto');
     if (pilots.some(p => p.name || p.time)) {
       await publishAll();
     }
