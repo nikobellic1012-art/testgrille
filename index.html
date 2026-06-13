@@ -453,6 +453,7 @@ async function publishAll() {
     await chMain.publish('config', light);
     const now = new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
     document.getElementById('s-sv').textContent = now;
+    saveLocal(); // Mettre à jour l'horodatage
     showToast('Envoyé ✓');
     // Sauvegarder localement avec les vraies données (avatars inclus)
     try { localStorage.setItem('tzr_grille_local', JSON.stringify({...cfg,assets:{logo:logoData,bg:bgData,cf:cfData,cfName}})); } catch(e) {}
@@ -709,47 +710,117 @@ function buildConfig() {
   };
 }
 
-function saveLocal() { try{localStorage.setItem('tzr_grille_local',JSON.stringify(buildConfig()));}catch(e){} }
+function saveLocal() {
+  try {
+    const cfg = buildConfig();
+    // Config légère sans images (toujours sauvegardée)
+    const light = { ...cfg, assets: {}, pilots: cfg.pilots.map(p=>({...p,avatar:null,avatarReveal:null})) };
+    localStorage.setItem('tzr_grille_light', JSON.stringify(light));
+
+    // Assets (images) — séparément car potentiellement volumineux
+    try {
+      const assets = { logo:logoData, bg:bgData };
+      localStorage.setItem('tzr_grille_assets', JSON.stringify(assets));
+    } catch(e) {
+      localStorage.removeItem('tzr_grille_assets'); // trop lourd, on vide
+    }
+
+    // Avatars pilotes — un par pilote pour éviter quota
+    pilots.forEach(p => {
+      try {
+        if (p.avatar)        localStorage.setItem('tzr_av_' + p.id, p.avatar);
+        if (p.avatarReveal)  localStorage.setItem('tzr_avr_' + p.id, p.avatarReveal);
+      } catch(e) { /* quota dépassé pour cet avatar */ }
+    });
+
+    // Nettoyer les anciens avatars orphelins
+    const currentIds = new Set(pilots.map(p => String(p.id)));
+    Object.keys(localStorage).forEach(k => {
+      if ((k.startsWith('tzr_av_') || k.startsWith('tzr_avr_')) && !currentIds.has(k.replace('tzr_av_','').replace('tzr_avr_',''))) {
+        localStorage.removeItem(k);
+      }
+    });
+
+    const now = new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    document.getElementById('s-sv').textContent = now;
+  } catch(e) { console.warn('[TZR] saveLocal error:', e); }
+}
 
 function loadLocal() {
-  const raw=localStorage.getItem('tzr_grille_local'); if(!raw) return;
+  // Essayer d'abord le nouveau format (tzr_grille_light), puis l'ancien (tzr_grille_local)
+  const raw = localStorage.getItem('tzr_grille_light') || localStorage.getItem('tzr_grille_local');
+  if (!raw) return;
   try {
-    const c=JSON.parse(raw);
-    if(c.pilots) pilots=c.pilots;
-    if(c.event){sv('ev-track',c.event.track);sv('ev-round',c.event.round);sv('ev-date',c.event.date);}
-    if(c.texts){sv('tx-badge',c.texts.badge);sv('tx-champ',c.texts.champ);sv('tx-sub',c.texts.sub);sv('tx-slogan',c.texts.slogan);sv('tx-fl',c.texts.fl);sv('tx-fr',c.texts.fr);sv('tx-rev',c.texts.rev);if(c.texts.badge)document.getElementById('org-badge').textContent=c.texts.badge;}
-    if(c.style){scp('c-bg','c-bg-h',c.style.bg);scp('c-acc','c-acc-h',c.style.accent);scp('c-pole','c-pole-h',c.style.poleColor);if(c.style.sizeName){sv('sz',c.style.sizeName);document.getElementById('sz-v').textContent=c.style.sizeName;}if(c.style.bgOpacity){sv('bg-op',c.style.bgOpacity);document.getElementById('bg-op-v').textContent=c.style.bgOpacity;}}
-    if(c.anim){sv('anim-mode',c.anim.mode);if(c.anim.speed){sv('anim-spd',c.anim.speed);document.getElementById('anim-spd-v').textContent=c.anim.speed;}sv('show-delta',c.anim.showDelta);}
-    if(c.fonts){sv('fn-title',c.fonts.title);sv('fn-subtitle',c.fonts.subtitle);sv('fn-meta',c.fonts.meta);sv('fn-pos',c.fonts.pos);sv('fn-name',c.fonts.name);sv('fn-team',c.fonts.team);sv('fn-time',c.fonts.time);sv('fn-footer',c.fonts.footer);}
-    if(c.sizes){
-      const szIds=['title','subtitle','meta','date','pos','name','team','time','footer'];
-      szIds.forEach(k=>{
-        const id='sz-'+k; const val=c.sizes[k];
-        if(val){sv(id,val);const vEl=document.getElementById(id+'-v');if(vEl)vEl.textContent=val;}
+    const c = JSON.parse(raw);
+
+    // Pilotes — restaurer avec leurs avatars depuis le localStorage séparé
+    if (c.pilots) {
+      pilots = c.pilots.map(p => ({
+        ...p,
+        avatar:        localStorage.getItem('tzr_av_'  + p.id) || p.avatar        || null,
+        avatarReveal:  localStorage.getItem('tzr_avr_' + p.id) || p.avatarReveal  || null,
+      }));
+    }
+
+    // Événement
+    if (c.event) { sv('ev-track',c.event.track); sv('ev-round',c.event.round); sv('ev-date',c.event.date); }
+
+    // Textes
+    if (c.texts) {
+      sv('tx-badge',c.texts.badge); sv('tx-champ',c.texts.champ); sv('tx-sub',c.texts.sub);
+      sv('tx-slogan',c.texts.slogan); sv('tx-fl',c.texts.fl); sv('tx-fr',c.texts.fr); sv('tx-rev',c.texts.rev);
+      if (c.texts.badge) document.getElementById('org-badge').textContent = c.texts.badge;
+    }
+
+    // Style
+    if (c.style) {
+      scp('c-bg','c-bg-h',c.style.bg); scp('c-acc','c-acc-h',c.style.accent); scp('c-pole','c-pole-h',c.style.poleColor);
+      if (c.style.sizeName)  { sv('sz',c.style.sizeName);  document.getElementById('sz-v').textContent  = c.style.sizeName; }
+      if (c.style.bgOpacity) { sv('bg-op',c.style.bgOpacity); document.getElementById('bg-op-v').textContent = c.style.bgOpacity; }
+    }
+
+    // Animation
+    if (c.anim) {
+      sv('anim-mode',c.anim.mode);
+      if (c.anim.speed) { sv('anim-spd',c.anim.speed); document.getElementById('anim-spd-v').textContent = c.anim.speed; }
+      sv('show-delta',c.anim.showDelta);
+    }
+
+    // Polices
+    if (c.fonts) {
+      ['title','subtitle','meta','pos','name','team','time','footer'].forEach(k => sv('fn-'+k, c.fonts[k]));
+    }
+
+    // Tailles
+    if (c.sizes) {
+      ['title','subtitle','meta','date','pos','name','team','time','footer'].forEach(k => {
+        const val = c.sizes[k]; if (!val) return;
+        sv('sz-'+k, val);
+        const vEl = document.getElementById('sz-'+k+'-v'); if (vEl) vEl.textContent = val;
       });
     }
-    if(c.colors2){
-      // Map colors2 keys -> input ids
-      const clMap = {
-        title:'cl-title', subtitle:'cl-subtitle', meta:'cl-meta', date:'cl-date',
-        posTxt:'cl-postxt', name:'cl-name', team:'cl-team',
-        time:'cl-time', delta:'cl-delta', footer:'cl-footer',
-        bar:'cl-bar'
-      };
-      Object.entries(clMap).forEach(([k,id])=>{
-        const val=c.colors2[k]; if(!val) return;
-        // Extraire hex depuis rgba si besoin
+
+    // Couleurs
+    if (c.colors2) {
+      const clMap = { title:'cl-title', subtitle:'cl-subtitle', meta:'cl-meta', date:'cl-date', posTxt:'cl-postxt', name:'cl-name', team:'cl-team', time:'cl-time', delta:'cl-delta', footer:'cl-footer', bar:'cl-bar' };
+      Object.entries(clMap).forEach(([k,id]) => {
+        const val = c.colors2[k]; if (!val) return;
         const hex = val.startsWith('#') ? val : rgbaToHex(val);
-        if(hex) scp(id, id+'-h', hex);
+        if (hex) scp(id, id+'-h', hex);
       });
-      // cardbg / cardbgp1 — extraire hex
-      if(c.colors2.cardBg){const h=rgbaToHex(c.colors2.cardBg);if(h)scp('cl-cardbg','cl-cardbg-h',h);}
-      if(c.colors2.cardBgP1){const h=rgbaToHex(c.colors2.cardBgP1);if(h)scp('cl-cardbgp1','cl-cardbgp1-h',h);}
-      if(c.colors2.posBg){const h=rgbaToHex(c.colors2.posBg);if(h)scp('cl-posbg','cl-posbg-h',h);}
+      if (c.colors2.cardBg)   { const h=rgbaToHex(c.colors2.cardBg);   if(h) scp('cl-cardbg',  'cl-cardbg-h',   h); }
+      if (c.colors2.cardBgP1) { const h=rgbaToHex(c.colors2.cardBgP1); if(h) scp('cl-cardbgp1','cl-cardbgp1-h', h); }
+      if (c.colors2.posBg)    { const h=rgbaToHex(c.colors2.posBg);    if(h) scp('cl-posbg',   'cl-posbg-h',    h); }
     }
-    if(c.assets){if(c.assets.logo){logoData=c.assets.logo;document.getElementById('logo-box').innerHTML=`<img src="${logoData}">`;}if(c.assets.bg){bgData=c.assets.bg;document.getElementById('bg-box').innerHTML=`<img src="${bgData}" style="max-height:42px;max-width:100%;object-fit:contain;">`;}};
+
+    // Assets (images) — depuis le localStorage séparé ou l'ancien format
+    const assetsRaw = localStorage.getItem('tzr_grille_assets');
+    const assetsData = assetsRaw ? JSON.parse(assetsRaw) : (c.assets || {});
+    if (assetsData.logo) { logoData = assetsData.logo; document.getElementById('logo-box').innerHTML = `<img src="${logoData}">`; }
+    if (assetsData.bg)   { bgData   = assetsData.bg;   document.getElementById('bg-box').innerHTML   = `<img src="${bgData}" style="max-height:42px;max-width:100%;object-fit:contain;">`; }
+
     showToast('Session restaurée ✓');
-  } catch(e){console.warn(e);}
+  } catch(e) { console.warn('[TZR] loadLocal error:', e); }
 }
 
 function sv(id,val){const el=document.getElementById(id);if(el&&val!=null)el.value=val;}
